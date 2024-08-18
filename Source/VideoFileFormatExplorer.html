@@ -1,0 +1,422 @@
+<html>
+<body>
+
+<div id="divUi">
+
+	<h3>Video File Format Explorer</h3>
+
+	<p>
+		Upload a video file in .mkv (Matroska) format
+		to see an analysis of its structure.
+		A sample file is avaliable
+		<a href="../Data/Rotating_Cube-200x150px_2s_24fps.mkv">here</a>.
+	</p>
+
+	<div>
+		<label>Video File to Upload:</label>
+		<input
+			type="file"
+			onchange="inputFile_Changed(this);"
+		/>
+	</div>
+
+	<div>
+		<label>File Contents as Hexadecimal:</label>
+		<br />
+		<textarea
+			id="textareaFileContentsAsHexadecimal"
+			cols="48" rows="10"
+		></textarea>
+	</div>
+
+	<div>
+		<label>File Structure as JSON:</label>
+		<br />
+		<textarea
+			id="textareaFileStructureAsJson"
+			cols="48" rows="10"
+		></textarea>
+	</div>
+</div>
+
+<script type="text/javascript">
+
+// UI event handlers.
+
+function inputFile_Changed(inputFile)
+{
+	var file = inputFile.files[0];
+	if (file != null)
+	{
+		var fileReader = new FileReader();
+		fileReader.onload = (event) =>
+		{
+			var fileContentsAsBinaryString =
+				event.target.result;
+
+			var fileContentsAsBytes =
+				fileContentsAsBinaryString
+					.split("")
+					.map(x => x.charCodeAt(0) );
+
+			var fileContentsAsHexadecimal =
+				fileContentsAsBytes
+					.map(x => x.toString(16).padStart(2, "0") )
+					.join(" ");
+
+			var d = document;
+
+			var textareaFileContentsAsHexadecimal =
+				d.getElementById("textareaFileContentsAsHexadecimal");
+			textareaFileContentsAsHexadecimal.value =
+				fileContentsAsHexadecimal;
+
+			var mkvFile =
+				MkvFile.fromBytes(fileContentsAsBytes);
+
+			var mkvFileAsJson = mkvFile.toJson();
+
+			var textareaFileStructureAsJson =
+				d.getElementById("textareaFileStructureAsJson");
+			textareaFileStructureAsJson.value =
+				mkvFileAsJson;
+		}
+		fileReader.readAsBinaryString(file);
+	}
+}
+
+// Classes.
+
+class ByteConverter
+{
+	static bytesToNumberLsbf(bytes)
+	{
+		var returnValue = 0;
+
+		for (var i = 0; i < bytes.length; i++)
+		{
+			var byteToConvert = bytes[i];
+			var byteValueInPlace = byteToConvert << (8 * i);
+			returnValue += byteValueInPlace;
+		}
+
+		return returnValue;
+	}
+
+	static bytesToNumberMsbf(bytes)
+	{
+		var returnValue = 0;
+
+		for (var i = 0; i < bytes.length; i++)
+		{
+			var iReversed = bytes.length - i - 1;
+			var byteToConvert = bytes[i];
+			var byteValueInPlace = byteToConvert << (8 * iReversed);
+			returnValue += byteValueInPlace;
+		}
+
+		return returnValue;
+	}
+}
+
+class ByteStream
+{
+	constructor(bytes)
+	{
+		this.bytes = bytes;
+
+		this.byteCurrentIndex = 0;
+	}
+
+	readByte()
+	{
+		var byteRead = this.bytes[this.byteCurrentIndex];
+		this.byteCurrentIndex++;
+		return byteRead;
+	}
+
+	readBytes(bytesToReadCount)
+	{
+		var bytesReadSoFar = [];
+
+		for (var i = 0; i < bytesToReadCount; i++)
+		{
+			var byteRead = this.readByte();
+			bytesReadSoFar.push(byteRead);
+		}
+
+		return bytesReadSoFar;
+	}
+
+	readInt32Lsbf()
+	{
+		return this.readInteger32BitLsbf();
+	}
+
+	readIntegerLsbf(byteCount) // "LSBF" = "Least Significant Byte First".
+	{
+		var bytes = this.readBytes(byteCount);
+		var returnValue =
+			ByteConverter.bytesToNumberLsbf(bytes);
+		return returnValue;
+	}
+
+	readIntegerMsbf(byteCount) // "MSBF" = "Most Significant Byte First".
+	{
+		var bytes = this.readBytes(byteCount);
+		var returnValue =
+			ByteConverter.bytesToNumberMsbf(bytes);
+		return returnValue;
+	}
+
+	readString(characterCount)
+	{
+		var bytes = this.readBytes(characterCount);
+		var returnValue =
+			bytes
+				.map(x => String.fromCharCode(x) )
+				.join("");
+		return returnValue;
+	}
+
+	readVariableLengthInteger()
+	{
+		var integerRead = null;
+
+		var byteRead = this.readByte();
+		var byteAsNibbles =
+			byteRead
+				.toString(16)
+				.split("")
+				.map(x => parseInt(x, 16) );
+
+		var nibbleFirst = byteAsNibbles[0];
+
+		if (nibbleFirst != 8)
+		{
+			throw new Error("Unexpected first nibble in variable-length integer: " + nibbleFirst);
+		}
+		else
+		{
+			var nibbleSecond = byteAsNibbles[1];
+			var integerLengthInBytes = nibbleSecond;
+			// Should this be MSBF or LSBF?
+			integerRead =
+				this.readIntegerMsbf(integerLengthInBytes);
+		}
+
+		return integerRead;
+	}
+
+	readVariableLengthString()
+	{
+		var stringRead = null;
+
+		var byteRead = this.readByte();
+		var byteAsNibbles =
+			byteRead
+				.toString(16)
+				.split("")
+				.map(x => parseInt(x, 16) );
+
+		var nibbleFirst = byteAsNibbles[0];
+
+		if (nibbleFirst != 8)
+		{
+			throw new Error("Unexpected first nibble in variable-length integer: " + nibbleFirst);
+		}
+		else
+		{
+			var nibbleSecond = byteAsNibbles[1];
+			var stringLengthInChars = nibbleSecond;
+			// Should this be MSBF or LSBF?
+			stringRead = this.readString(stringLengthInChars);
+		}
+
+		return stringRead;
+	}
+}
+
+class MkvFile
+{
+	constructor
+	(
+		ebmlElementPayload,
+		ebmlVersion,
+		ebmlReadVersion,
+		ebmlMaxIdLength,
+		ebmlMaxSizeLength,
+		docType,
+		docTypeVersion,
+		docTypeReadVersion
+	)
+	{
+		this.ebmlElementPayload = ebmlElementPayload;
+		this.ebmlVersion = ebmlVersion;
+		this.ebmlReadVersion = ebmlReadVersion;
+		this.ebmlMaxIdLength = ebmlMaxIdLength;
+		this.ebmlMaxSizeLength = ebmlMaxSizeLength;
+		this.docType = docType;
+		this.docTypeVersion = docTypeVersion;
+		this.docTypeReadVersion = docTypeReadVersion;
+	}
+
+	static fromBytes(bytes)
+	{
+		var reader = new ByteStream(bytes);
+
+		// Field specifications taken from 
+		// a rather confusing RFC document found at 
+		// https://datatracker.ietf.org/doc/rfc8794/,
+		// as compared with the sample file.
+		// It is assumed that the "-Value" variables are payloads
+		// for the field types whose identifiers they follow.
+		// It's also possible that the payload values
+		// may be of variable length.
+
+		// "EBML" = "Extensible Binary Meta Language".
+
+		var ebmlElementFieldId = reader.readIntegerMsbf(4);
+		if (ebmlElementFieldId != 0x1a45dfa3)
+		{
+			throw new Error
+			(
+				"Unexpected EBML element ID: "
+				+ ebmlElementFieldId
+			);
+		}
+		var ebmlElementPayload = reader.readBytes(1); // 0xA3 = 10100011
+
+		var ebmlVersionFieldId = reader.readIntegerMsbf(2);
+		if (ebmlVersionFieldId != 0x4286)
+		{
+			throw new Error
+			(
+				"Unexpected EBML version field ID: "
+				+ ebmlVersionFieldId
+			);
+		}
+		var ebmlVersion =
+			reader.readVariableLengthInteger();
+			// 0x8101 = "8 1 01" - 1 payload byte with value 01
+
+		var ebmlReadVersionFieldId = reader.readIntegerMsbf(2); // 0x42F7
+		if (ebmlReadVersionFieldId != 0x42F7)
+		{
+			throw new Error
+			(
+				"Unexpected EBML read version field ID: "
+				+ ebmlReadVersionFieldId
+			);
+		}
+		var ebmlReadVersion =
+			reader.readVariableLengthInteger(); // 1
+
+		var ebmlMaxIdLengthFieldId = reader.readIntegerMsbf(2);
+		if (ebmlMaxIdLengthFieldId != 0x42F2)
+		{
+			throw new Error
+			(
+				"Unexpected EBML max ID length field ID: "
+				+ ebmlMaxIdLengthFieldId
+			);
+		}
+		var ebmlMaxIdLength =
+			reader.readVariableLengthInteger(); // 4 = default
+
+		var ebmlMaxSizeLengthFieldId = reader.readIntegerMsbf(2);
+		if (ebmlMaxSizeLengthFieldId != 0x42F3)
+		{
+			throw new Error
+			(
+				"Unexpected EBML max size length field ID: "
+				+ ebmlMaxSizeLengthFieldId
+			);
+		}
+		var ebmlMaxSizeLength =
+			reader.readVariableLengthInteger(); // 8 = default
+
+		var docTypeFieldId = reader.readIntegerMsbf(2);
+		if (docTypeFieldId != 0x4282)
+		{
+			throw new Error
+			(
+				"Unexpected doc type field ID: "
+				+ docTypeFieldId
+			);
+		}
+		var docType = reader.readVariableLengthString();
+
+		if (docType != "matroska")
+		{
+			throw new Error
+			(
+				"Unexpected doc type: " + docType
+			);
+		}
+
+		var docTypeVersionFieldId = reader.readIntegerMsbf(2);
+		if (docTypeVersionFieldId != 0x4287)
+		{
+			throw new Error
+			(
+				"Unexpected doc type version field ID: "
+				+ docTypeVersionFieldId
+			);
+		}
+		var docTypeVersion =
+			reader.readVariableLengthInteger(); // 4
+
+		var docTypeReadVersionFieldId = reader.readIntegerMsbf(2);
+		if (docTypeReadVersionFieldId != 0x4285)
+		{
+			throw new Error
+			(
+				"Unexpected doc type read version field ID: "
+				+ docTypeReadVersionFieldId
+			);
+		}
+		var docTypeReadVersion =
+			reader.readVariableLengthInteger(); // 2
+
+		/*
+		// Not present in demo file?
+
+		var docTypeExtensionFieldId = reader.readBytes(2);
+		if (docTypeExtensionFieldId != 0x4281)
+		{
+			throw new Error
+			(
+				"Unexpected doc type extension field ID: "
+				+ docTypeExtensionFieldId
+			);
+		}
+		*/
+
+		// Things seem to go off track here.
+
+		var returnValue = new MkvFile
+		(
+			ebmlElementPayload,
+			ebmlVersion,
+			ebmlReadVersion,
+			ebmlMaxIdLength,
+			ebmlMaxSizeLength,
+			docType,
+			docTypeVersion,
+			docTypeReadVersion
+		);
+
+		return returnValue;
+	}
+
+	toJson()
+	{
+		return JSON.stringify(this, null, 4);
+	}
+}
+
+</script>
+
+</body>
+</html>
