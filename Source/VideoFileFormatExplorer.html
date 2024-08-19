@@ -117,6 +117,11 @@ class ByteConverter
 
 		return returnValue;
 	}
+
+	static bytesToString(bytes)
+	{
+		return bytes.map(x => String.fromCharCode(x) ).join("");
+	}
 }
 
 class ByteStream
@@ -179,61 +184,51 @@ class ByteStream
 		return returnValue;
 	}
 
-	readVariableLengthInteger()
+	// The following methods are EBML-specific,
+	// and so probably belongs in a subclass or something.
+
+	readVariableLengthBytes()
 	{
-		var integerRead = null;
+		// The spec is terrible at explaining how
+		// this actually works, so it's being faked here.
+		// It won't work for all cases, however.
+
+		var bytesRead = null;
 
 		var byteRead = this.readByte();
-		var byteAsNibbles =
-			byteRead
-				.toString(16)
-				.split("")
-				.map(x => parseInt(x, 16) );
+		var byteAsBitString =
+			byteRead.toString(2);
 
-		var nibbleFirst = byteAsNibbles[0];
+		var firstThreeBits = byteAsBitString.substr(0, 3);
 
-		if (nibbleFirst != 8)
+		if (firstThreeBits != "100")
 		{
-			throw new Error("Unexpected first nibble in variable-length integer: " + nibbleFirst);
+			throw new Error("Unexpected first three bits in variable-length integer: " + firstThreeBits);
 		}
 		else
 		{
-			var nibbleSecond = byteAsNibbles[1];
-			var integerLengthInBytes = nibbleSecond;
-			// Should this be MSBF or LSBF?
-			integerRead =
-				this.readIntegerMsbf(integerLengthInBytes);
+			var lastFiveBits = byteAsBitString.substr(3);
+			var byteCount = parseInt(lastFiveBits, 2);
+			bytesRead = this.readBytes(byteCount);
 		}
 
-		return integerRead;
+		return bytesRead;
+	}
+
+	readVariableLengthInteger()
+	{
+		return ByteConverter.bytesToNumberMsbf
+		(
+			this.readVariableLengthBytes()
+		);
 	}
 
 	readVariableLengthString()
 	{
-		var stringRead = null;
-
-		var byteRead = this.readByte();
-		var byteAsNibbles =
-			byteRead
-				.toString(16)
-				.split("")
-				.map(x => parseInt(x, 16) );
-
-		var nibbleFirst = byteAsNibbles[0];
-
-		if (nibbleFirst != 8)
-		{
-			throw new Error("Unexpected first nibble in variable-length integer: " + nibbleFirst);
-		}
-		else
-		{
-			var nibbleSecond = byteAsNibbles[1];
-			var stringLengthInChars = nibbleSecond;
-			// Should this be MSBF or LSBF?
-			stringRead = this.readString(stringLengthInChars);
-		}
-
-		return stringRead;
+		return ByteConverter.bytesToString
+		(
+			this.readVariableLengthBytes()
+		);
 	}
 }
 
@@ -248,7 +243,11 @@ class MkvFile
 		ebmlMaxSizeLength,
 		docType,
 		docTypeVersion,
-		docTypeReadVersion
+		docTypeReadVersion,
+
+		info,
+		seeks,
+		tracks
 	)
 	{
 		this.ebmlElementPayload = ebmlElementPayload;
@@ -259,6 +258,10 @@ class MkvFile
 		this.docType = docType;
 		this.docTypeVersion = docTypeVersion;
 		this.docTypeReadVersion = docTypeReadVersion;
+
+		this.seeks = seeks;
+		this.info = info;
+		this.tracks = tracks;
 	}
 
 	static fromBytes(bytes)
@@ -276,73 +279,73 @@ class MkvFile
 
 		// "EBML" = "Extensible Binary Meta Language".
 
-		var ebmlElementFieldId = reader.readIntegerMsbf(4);
-		if (ebmlElementFieldId != 0x1a45dfa3)
+		var fieldId = reader.readIntegerMsbf(4);
+		if (fieldId != 0x1a45dfa3)
 		{
 			throw new Error
 			(
 				"Unexpected EBML element ID: "
-				+ ebmlElementFieldId
+				+ fieldId
 			);
 		}
 		var ebmlElementPayload = reader.readBytes(1); // 0xA3 = 10100011
 
-		var ebmlVersionFieldId = reader.readIntegerMsbf(2);
-		if (ebmlVersionFieldId != 0x4286)
+		fieldId = reader.readIntegerMsbf(2);
+		if (fieldId != 0x4286)
 		{
 			throw new Error
 			(
 				"Unexpected EBML version field ID: "
-				+ ebmlVersionFieldId
+				+ fieldId
 			);
 		}
 		var ebmlVersion =
 			reader.readVariableLengthInteger();
 			// 0x8101 = "8 1 01" - 1 payload byte with value 01
 
-		var ebmlReadVersionFieldId = reader.readIntegerMsbf(2); // 0x42F7
-		if (ebmlReadVersionFieldId != 0x42F7)
+		fieldId = reader.readIntegerMsbf(2);
+		if (fieldId != 0x42F7)
 		{
 			throw new Error
 			(
 				"Unexpected EBML read version field ID: "
-				+ ebmlReadVersionFieldId
+				+ fieldId
 			);
 		}
 		var ebmlReadVersion =
 			reader.readVariableLengthInteger(); // 1
 
-		var ebmlMaxIdLengthFieldId = reader.readIntegerMsbf(2);
-		if (ebmlMaxIdLengthFieldId != 0x42F2)
+		fieldId = reader.readIntegerMsbf(2);
+		if (fieldId != 0x42F2)
 		{
 			throw new Error
 			(
 				"Unexpected EBML max ID length field ID: "
-				+ ebmlMaxIdLengthFieldId
+				+ fieldId
 			);
 		}
 		var ebmlMaxIdLength =
 			reader.readVariableLengthInteger(); // 4 = default
 
-		var ebmlMaxSizeLengthFieldId = reader.readIntegerMsbf(2);
-		if (ebmlMaxSizeLengthFieldId != 0x42F3)
+		fieldId = reader.readIntegerMsbf(2);
+		if (fieldId != 0x42F3)
 		{
 			throw new Error
 			(
 				"Unexpected EBML max size length field ID: "
-				+ ebmlMaxSizeLengthFieldId
+				+ fieldId
 			);
 		}
 		var ebmlMaxSizeLength =
 			reader.readVariableLengthInteger(); // 8 = default
 
-		var docTypeFieldId = reader.readIntegerMsbf(2);
-		if (docTypeFieldId != 0x4282)
+		fieldId = reader.readIntegerMsbf(2);
+		if (fieldId != 0x4282)
 		{
 			throw new Error
 			(
 				"Unexpected doc type field ID: "
-				+ docTypeFieldId
+				+ fieldId
 			);
 		}
 		var docType = reader.readVariableLengthString();
@@ -355,33 +358,34 @@ class MkvFile
 			);
 		}
 
-		var docTypeVersionFieldId = reader.readIntegerMsbf(2);
-		if (docTypeVersionFieldId != 0x4287)
+		fieldId = reader.readIntegerMsbf(2);
+		if (fieldId != 0x4287)
 		{
 			throw new Error
 			(
 				"Unexpected doc type version field ID: "
-				+ docTypeVersionFieldId
+				+ fieldId
 			);
 		}
 		var docTypeVersion =
 			reader.readVariableLengthInteger(); // 4
 
-		var docTypeReadVersionFieldId = reader.readIntegerMsbf(2);
-		if (docTypeReadVersionFieldId != 0x4285)
+		fieldId = reader.readIntegerMsbf(2);
+		if (fieldId != 0x4285)
 		{
 			throw new Error
 			(
 				"Unexpected doc type read version field ID: "
-				+ docTypeReadVersionFieldId
+				+ fieldId
 			);
 		}
 		var docTypeReadVersion =
 			reader.readVariableLengthInteger(); // 2
 
-		/*
-		// Not present in demo file?
+		// The next field listed in the EBML spec
+		// is seemingly not present in the sample file.
 
+		/*
 		var docTypeExtensionFieldId = reader.readBytes(2);
 		if (docTypeExtensionFieldId != 0x4281)
 		{
@@ -393,7 +397,238 @@ class MkvFile
 		}
 		*/
 
-		// Things seem to go off track here.
+		// After this point, the EBML specification RFC at the link above
+		// seems to diverge from the values in the sample file.
+		// So we'll switch to even more confusing
+		// Matroska-specific specification found at the URL
+		// https://www.matroska.org/technical/elements.html.
+
+		fieldId = reader.readIntegerMsbf(4);
+		if (fieldId != 0x18538067)
+		{
+			throw new Error
+			(
+				"Unexpected Matroska segment header: "
+				+ fieldId
+			);
+		}
+
+		// And, almost instantly, the new specification
+		// also stops lining up with the sample file.
+		// Anyway, for now we'll just record the mysterious bytes
+		// then pick up at the next identifiable field.
+
+		var notSureWhatThisIs = reader.readBytes(8); // 0x010000000000269c
+
+		// It's possible that this and subsequent
+		// "notSureWhatThisIs" bytes represent
+		// variable-length sequences, that this
+		// code is not currently capable of decoding correctly.
+
+		// Seek.
+
+		var fieldId = reader.readIntegerMsbf(4);
+		if (fieldId != 0x114D9B74)
+		{
+			throw new Error("Unexpected seek head: " + fieldId);
+		}
+
+		var notSureWhatThisIs2 = reader.readBytes(7); // 0xC0BF8422A3E4FF
+
+		var seeks = [];
+		var fieldId = reader.readIntegerMsbf(2);
+		while (fieldId == 0x4DBB)
+		{
+			var seekAsBytes = reader.readVariableLengthBytes();
+			var seek = MkvFileSeek.fromBytes(seekAsBytes);
+			seeks.push(seek);
+			fieldId = reader.readIntegerMsbf(2);
+		}
+
+		if (fieldId != 0xEC01)
+		{
+			// Just because the sample file has this value
+			// at this position, that doesn't mean it's
+			// clear what this field actually means, of course.
+			throw new Error("Unexpected field ID after seeks: " + fieldId);
+		}
+
+		var notSureWhatThisIs3 =
+			reader.readBytes(90); // Mostly zeroes, but one 0x53 in there.
+
+		// Info.
+
+		fieldId = reader.readIntegerMsbf(4);
+		if (fieldId != 0x1549A966)
+		{
+			throw new Error("Unexpected info segment header: " + fieldId);
+		}
+
+		var notSureWhatThisIs4 = reader.readBytes(46);
+
+		fieldId = reader.readIntegerMsbf(2);
+		if (fieldId != 0x73A4)
+		{
+			throw new Error("Unexpected segment UUID field ID: " + fieldId);
+		}
+		// Why do a variable-length integer here?
+		// UUIDs should always be 16 bytes, right?
+		var segmentUuid = reader.readVariableLengthBytes();
+
+		fieldId = reader.readIntegerMsbf(2);
+		if (fieldId != 0x4489)
+		{
+			throw new Error
+			(
+				"Unexpected duration field ID: " + fieldId
+			);
+		}
+
+		// This is a floating-point value,
+		// which this code cannot yet parse.
+		var durationInSegmentTicks =
+			reader.readVariableLengthBytes(); 
+
+		var info = new MkvFileInfo
+		(
+			segmentUuid,
+			durationInSegmentTicks
+		);
+
+		// Tracks.
+
+		fieldId = reader.readIntegerMsbf(4);
+		if (fieldId != 0x1654AE6B)
+		{
+			throw new Error
+			(
+				"Unexpected tracks header: " + fieldId
+			);
+		}
+		var notSureWhatThisIs5 = reader.readBytes(8);
+
+		fieldId = reader.readByte();
+		if (fieldId != 0xAE)
+		{
+			throw new Error
+			(
+				"Unexpected track entry field ID: " + fieldId
+			);
+		}
+		var notSureWhatThisIs6 = reader.readBytes(8);
+
+		fieldId = reader.readByte();
+		if (fieldId != 0xD7)
+		{
+			throw new Error
+			(
+				"Unexpected track number field ID: " + fieldId
+			);
+		}
+		var trackNumber = reader.readVariableLengthInteger();
+
+		fieldId = reader.readIntegerMsbf(2);
+		if (fieldId != 0x73C5)
+		{
+			throw new Error
+			(
+				"Unexpected track unique ID field ID: "
+				+ fieldId
+			);
+		}
+		var trackUniqueId = reader.readVariableLengthInteger();
+
+		var fieldId = reader.readByte();
+		if (fieldId != 0x9C)
+		{
+			throw new Error
+			(
+				"Unexpected track flag lacing field ID: "
+				+ fieldId
+			);
+		}
+		var trackFlagLacing = reader.readVariableLengthInteger();
+
+		fieldId = reader.readIntegerMsbf(3);
+		if (fieldId != 0x22B59C)
+		{
+			throw new Error
+			(
+				"Unexpected track language field ID: "
+				+ fieldId
+			);
+		}
+		var trackLanguageCode = reader.readVariableLengthInteger();
+
+		fieldId = reader.readByte();
+		if (fieldId != 0x88)
+		{
+			throw new Error
+			(
+				"Unexpected track default field ID: "
+				+ fieldId
+			);
+		}
+		var trackFlagDefault = reader.readVariableLengthInteger();
+
+		fieldId = reader.readByte();
+		if (fieldId != 0x86)
+		{
+			throw new Error
+			(
+				"Unexpected track codec ID field ID: "
+				+ fieldId
+			);
+		}
+		var trackCodecId = reader.readVariableLengthInteger();
+
+		fieldId = reader.readByte();
+		if (fieldId != 0x83)
+		{
+			throw new Error
+			(
+				"Unexpected track type code field ID: " + fieldId
+			);
+		}
+		var trackTypeCode = reader.readVariableLengthInteger();
+
+		var fieldId = reader.readIntegerMsbf(3);
+		if (fieldId != 0x23E383)
+		{
+			throw new Error
+			(
+				"Unexpected default nanoseconds/frame field ID: " + fieldId
+			);
+		}
+		var defaultNanosecondsPerFrame =
+			reader.readVariableLengthInteger();
+
+		// Video.
+
+		var fieldId = reader.readByte();
+		if (fieldId != 0xE0)
+		{
+			throw new Error
+			(
+				"Unexpected default video settings field ID: " + fieldId
+			);
+		}
+
+		var track = new MkvFileTrack
+		(
+			trackNumber,
+			trackUniqueId,
+			trackFlagLacing,
+			trackLanguageCode,
+			trackFlagDefault,
+			trackCodecId,
+			trackTypeCode,
+			defaultNanosecondsPerFrame
+		);
+
+		var tracks = [ track ];
+
+		// todo
 
 		var returnValue = new MkvFile
 		(
@@ -404,7 +639,11 @@ class MkvFile
 			ebmlMaxSizeLength,
 			docType,
 			docTypeVersion,
-			docTypeReadVersion
+			docTypeReadVersion,
+
+			info,
+			seeks,
+			tracks
 		);
 
 		return returnValue;
@@ -413,6 +652,62 @@ class MkvFile
 	toJson()
 	{
 		return JSON.stringify(this, null, 4);
+	}
+}
+
+class MkvFileInfo
+{
+	constructor
+	(
+		segmentUuid,
+		durationInSegmentTicks
+	)
+	{
+		this.segmentUuid = segmentUuid;
+		this.durationInSegmentTicks = durationInSegmentTicks;
+	}
+}
+
+class MkvFileSeek
+{
+	constructor(bytes)
+	{
+		// todo
+		// Read children from bytes.
+		// They are marked with 0x53AB (SeekID)
+		// and 0x53AC (SeekPosition).
+
+		this.bytes = bytes;
+	}
+
+	static fromBytes(bytes)
+	{
+		return new MkvFileSeek(bytes);
+	}
+}
+
+class MkvFileTrack
+{
+	constructor
+	(
+		trackNumber,
+		uniqueId,
+		flagLacing,
+		languageCode,
+		flagDefault,
+		codecId,
+		typeCode,
+		defaultNanosecondsPerFrame
+	)
+	{
+		this.trackNumber = trackNumber;
+		this.uniqueId = uniqueId;
+		this.flagLacing = flagLacing;
+		this.languageCode = languageCode;
+		this.flagDefault = flagDefault;
+		this.codecId = codecId;
+		this.typeCode = typeCode;
+		this.defaultNanosecondsPerFrame = defaultNanosecondsPerFrame;
 	}
 }
 
